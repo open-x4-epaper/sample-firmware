@@ -89,6 +89,9 @@ The XteinkX4 uses **resistor ladder networks** connected to two ADC pins for but
 - Volume Up: ~2205
 - Volume Down: ~3
 
+**GPIO3 (Power button)**:
+- Pressed: ~3
+
 ### Implementation Notes
 
 - Use threshold ranges (e.g., `value > 3200 && value < 3700`) to detect button presses

@@ -16,6 +16,7 @@
 // Button pins (ADC resistor ladders)
 #define BTN_GPIO1 1 // 4 buttons: Back, Confirm, Left, Right
 #define BTN_GPIO2 2 // 2 buttons: Volume Up, Volume Down
+#define BTN_GPIO3 3 // Power button
 
 // Button enum
 enum Button
@@ -26,7 +27,8 @@ enum Button
   CONFIRM,
   BACK,
   VOLUME_UP,
-  VOLUME_DOWN
+  VOLUME_DOWN,
+  POWER
 };
 
 // Display command enum
@@ -40,6 +42,7 @@ enum DisplayCommand
 
 // Button ADC thresholds
 const int BTN_THRESHOLD = 100; // Threshold tolerance
+const int BTN_POWER_VAL = 3;
 const int BTN_RIGHT_VAL = 3;
 const int BTN_LEFT_VAL = 1470;
 const int BTN_CONFIRM_VAL = 2655;
@@ -66,6 +69,8 @@ const char *getButtonName(Button btn)
     return "VOLUME UP pressed!";
   case VOLUME_DOWN:
     return "VOLUME DOWN pressed!";
+  case POWER:
+    return "POWER pressed!";
   default:
     return "";
   }
@@ -76,7 +81,13 @@ Button GetPressedButton()
 {
   int btn1 = analogRead(BTN_GPIO1);
   int btn2 = analogRead(BTN_GPIO2);
+  int btn3 = analogRead(BTN_GPIO3);
 
+  // Check BTN_GPIO3 (Power button)
+  if (btn3 < BTN_POWER_VAL + BTN_THRESHOLD)
+  {
+    return POWER;
+  }  
   // Check BTN_GPIO1 (4 buttons on resistor ladder)
   if (btn1 < BTN_RIGHT_VAL + BTN_THRESHOLD)
   {
@@ -257,5 +268,24 @@ void loop()
   }
 
   lastButton = currentButton;
+
+#ifdef DEBUG_IO
+  // Log raw analog levels of BTN1 and BTN2 not more often than once per second
+  static unsigned long lastLogMs = 0;
+  unsigned long now = millis();
+  if (now - lastLogMs >= 1000)
+  {
+    int rawBtn1 = analogRead(BTN_GPIO1);
+    int rawBtn2 = analogRead(BTN_GPIO2);
+    int rawBtn3 = analogRead(BTN_GPIO3);
+    Serial.print("ADC BTN1=");
+    Serial.print(rawBtn1);
+    Serial.print("    BTN2=");
+    Serial.print(rawBtn2);
+    Serial.print("    BTN3=");
+    Serial.println(rawBtn3);
+    lastLogMs = now;
+  }
   delay(50);
+#endif
 }
