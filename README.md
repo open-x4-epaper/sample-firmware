@@ -46,6 +46,11 @@ Before flashing custom firmware, back up the factory firmware:
 # Read entire 16MB flash
 esptool.py --chip esp32c3 --port COM5 read_flash 0x0 0x1000000 firmware_backup.bin
 ```
+```powershell
+# Read only app0 (faster)
+esptool.py --chip esp32c3 --port COM5 read_flash 0x10000 0x640000 app0_backup.bin
+```
+
 
 ### Restore Original Firmware
 
@@ -54,6 +59,11 @@ To restore the backed-up firmware:
 ```powershell
 # Write back the entire flash
 esptool.py --chip esp32c3 --port COM5 write_flash 0x0 firmware_backup.bin
+```
+
+```powershell
+# Write back only app0 (faster)
+esptool.py --chip esp32c3 --port COM5 write_flash 0x10000 app0_backup.bin
 ```
 
 **Important**: Make sure to use the correct COM port for your device.
@@ -67,9 +77,9 @@ esptool.py --chip esp32c3 --port COM5 write_flash 0x0 firmware_backup.bin
 ## Open Tasks
 
 - Better font rendering with grayscale support
-- Power on/off
+- ~~Power on/off~~
 - SD card reader
-- Read battery percentage
+- ~~Read battery percentage~~
 - WiFi
 - Bluetooth
 
@@ -88,6 +98,16 @@ The XteinkX4 uses **resistor ladder networks** connected to two ADC pins for but
 **GPIO2 (2 buttons)**:
 - Volume Up: ~2205
 - Volume Down: ~3
+
+**GPIO3 (Power button)**:
+- Pressed: ~3
+- This example uses a 2-second-long press for sleep and a 1.5-second-long press to wake from sleep
+
+**Battery ADC**:
+- GPIO0, raw value ranges up to ~2800 when charging. ~2760 when not charging and full.
+- Voltage divider is ~2 (2 x 10K resistors), `CONV_FACTOR=1.6113` for [this library](https://github.com/pangodream/18650CL)
+- [See here](https://www.pangodream.es/esp32-getting-battery-charging-level) for details how voltage and charge level are calculated
+- `CONV_FACTOR` may need calibration depending on the device, `1.5176` working well on mine
 
 ### Implementation Notes
 
