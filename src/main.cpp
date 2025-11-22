@@ -4,7 +4,7 @@
 #include <GxEPD2_BW.h>
 #include <SPI.h>
 #include "image.h"
-#include "Pangodream_18650_CL.h"
+#include "BatteryMonitor.h"
 
 // Display SPI pins (custom pins for XteinkX4, not hardware SPI defaults)
 #define EPD_SCLK 8  // SPI Clock
@@ -20,12 +20,9 @@
 #define BTN_GPIO3 3 // Power button (digital)
 
 #define UART0_RXD 20 // Used for USB connection detection
-
 #define BAT_GPIO0 0 // Battery voltage
-#define READS 10
-#define CONV_FACTOR 1.5176
 
-Pangodream_18650_CL BL(BAT_GPIO0, CONV_FACTOR, READS);
+static BatteryMonitor g_battery(BAT_GPIO0);
 
 static int rawBat = 0;
 
@@ -44,7 +41,7 @@ volatile DisplayCommand displayCommand = DISPLAY_NONE;
 // GxEPD2 display - Using GxEPD2_426_GDEQ0426T82
 // Note: XteinkX4 has 4.26" 800x480 display
 GxEPD2_BW<GxEPD2_426_GDEQ0426T82, GxEPD2_426_GDEQ0426T82::HEIGHT> display(
-    GxEPD2_426_GDEQ0426T82(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+  GxEPD2_426_GDEQ0426T82(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
 // FreeRTOS task for non-blocking display updates
 TaskHandle_t displayTaskHandle = NULL;
@@ -77,6 +74,7 @@ volatile Button currentPressedButton = NONE;
 // Power button timing
 const unsigned long POWER_BUTTON_WAKEUP_MS = 1000; // Time required to confirm boot from sleep
 const unsigned long POWER_BUTTON_SLEEP_MS = 1000;  // Time required to enter sleep mode
+
 
 // Get button name as string
 const char *getButtonName(Button btn)
@@ -163,11 +161,11 @@ void drawBatteryInfo()
   display.printf("Power: %s", charging ? "Charging" : "Battery");
 
   display.setCursor(40, 200);
-  display.printf("Raw: %i", rawBat);
+  display.printf("Raw: %i", g_battery.readRawMillivolts());
   display.setCursor(40, 240);
-  display.printf("Volts: %.2f V", BL.getBatteryVolts());
+  display.printf("Volts: %.2f V", g_battery.readVolts());
   display.setCursor(40, 280);
-  display.printf("Charge: %i%%", BL.getBatteryChargeLevel());
+  display.printf("Charge: %i%%", g_battery.readPercentage());
 }
 
 // Display update task running on separate core
@@ -410,14 +408,14 @@ void loop()
 
     Serial.println("");
 
-    Serial.print("Value from pin: ");
-    Serial.println(rawBat);
-    Serial.print("Average value from pin: ");
-    Serial.println(BL.pinRead());
+    Serial.print("Value from pin (raw/calibrated): ");
+    Serial.print(rawBat);
+    Serial.print(" / ");
+    Serial.println(BatteryMonitor::millivoltsFromRawAdc(rawBat));
     Serial.print("Volts: ");
-    Serial.println(BL.getBatteryVolts());
+    Serial.println(g_battery.readVolts());
     Serial.print("Charge level: ");
-    Serial.println(BL.getBatteryChargeLevel());
+    Serial.println(g_battery.readPercentage());
     Serial.println("");
     lastLogMs = now;
   }
