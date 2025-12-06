@@ -5,11 +5,10 @@
 #include <SPI.h>
 #include <FS.h>
 #include <SD.h>
-#include <string.h>
 
 #include "image.h"
 #include "BatteryMonitor.h"
-
+#include "InputManager.h"
 
 #define SPI_FQ 40000000
 // Display SPI pins (custom pins for XteinkX4, not hardware SPI defaults)
@@ -20,11 +19,6 @@
 #define EPD_RST 5   // Reset
 #define EPD_BUSY 6  // Busy
 
-// Button pins
-#define BTN_GPIO1 1 // 4 buttons on ADC resistor ladder: Back, Confirm, Left, Right
-#define BTN_GPIO2 2 // 2 buttons on ADC resistor ladder: Volume Up, Volume Down
-#define BTN_GPIO3 3 // Power button (digital)
-
 #define UART0_RXD 20 // Used for USB connection detection
 #define BAT_GPIO0 0 // Battery voltage
 
@@ -32,10 +26,9 @@
 #define SD_SPI_MISO 7
 
 static bool g_sdReady = false;
-
-static BatteryMonitor g_battery(BAT_GPIO0);
-
 static int rawBat = 0;
+static BatteryMonitor g_battery(BAT_GPIO0);
+static InputManager input_manager;
 
 // Display command enum
 enum DisplayCommand
@@ -57,103 +50,9 @@ GxEPD2_BW<GxEPD2_426_GDEQ0426T82, GxEPD2_426_GDEQ0426T82::HEIGHT> display(
 // FreeRTOS task for non-blocking display updates
 TaskHandle_t displayTaskHandle = NULL;
 
-// Button ADC thresholds
-const int BTN_THRESHOLD = 100; // Threshold tolerance
-const int BTN_RIGHT_VAL = 3;
-const int BTN_LEFT_VAL = 1470;
-const int BTN_CONFIRM_VAL = 2655;
-const int BTN_BACK_VAL = 3470;
-const int BTN_VOLUME_DOWN_VAL = 3;
-const int BTN_VOLUME_UP_VAL = 2205;
-
-// Button enum
-enum Button
-{
-  NONE = 0,
-  RIGHT,
-  LEFT,
-  CONFIRM,
-  BACK,
-  VOLUME_UP,
-  VOLUME_DOWN,
-  POWER
-};
-
-static Button lastButton = NONE;
-volatile Button currentPressedButton = NONE;
-
 // Power button timing
 const unsigned long POWER_BUTTON_WAKEUP_MS = 1000; // Time required to confirm boot from sleep
 const unsigned long POWER_BUTTON_SLEEP_MS = 1000;  // Time required to enter sleep mode
-
-
-// Get button name as string
-const char *getButtonName(Button btn)
-{
-  switch (btn)
-  {
-  case NONE:
-    return "Press any button";
-  case RIGHT:
-    return "RIGHT pressed!";
-  case LEFT:
-    return "LEFT pressed!";
-  case CONFIRM:
-    return "CONFIRM pressed!";
-  case BACK:
-    return "BACK pressed!";
-  case VOLUME_UP:
-    return "VOLUME UP pressed!";
-  case VOLUME_DOWN:
-    return "VOLUME DOWN pressed!";
-  case POWER:
-    return "POWER pressed!";
-  default:
-    return "";
-  }
-}
-
-// Get currently pressed button by reading ADC values (and digital for power button)
-Button GetPressedButton()
-{
-  int btn1 = analogRead(BTN_GPIO1);
-  int btn2 = analogRead(BTN_GPIO2);
-
-  // Check BTN_GPIO3 (Power button) - digital read
-  if (digitalRead(BTN_GPIO3) == LOW)
-  {
-    return POWER;
-  }
-  // Check BTN_GPIO1 (4 buttons on resistor ladder)
-  if (btn1 < BTN_RIGHT_VAL + BTN_THRESHOLD)
-  {
-    return RIGHT;
-  }
-  else if (btn1 < BTN_LEFT_VAL + BTN_THRESHOLD)
-  {
-    return LEFT;
-  }
-  else if (btn1 < BTN_CONFIRM_VAL + BTN_THRESHOLD)
-  {
-    return CONFIRM;
-  }
-  else if (btn1 < BTN_BACK_VAL + BTN_THRESHOLD)
-  {
-    return BACK;
-  }
-
-  // Check BTN_GPIO2 (2 buttons on resistor ladder)
-  if (btn2 < BTN_VOLUME_DOWN_VAL + BTN_THRESHOLD)
-  {
-    return VOLUME_DOWN;
-  }
-  else if (btn2 < BTN_VOLUME_UP_VAL + BTN_THRESHOLD)
-  {
-    return VOLUME_UP;
-  }
-
-  return NONE;
-}
 
 // Check if charging
 bool isCharging()
@@ -285,7 +184,24 @@ void displayUpdateTask(void *parameter)
           // Button text with smaller font
           display.setFont(&FreeMonoBold12pt7b);
           display.setCursor(20, 100);
-          display.print(getButtonName(currentPressedButton));
+          bool anyPressed = false;
+          for (int i = 0; i <= 6; i++)
+          {
+            if (input_manager.isPressed(i))
+            {
+              if (!anyPressed)
+              {
+                display.print("Pressing:");
+                anyPressed = true;
+              }
+              display.print(" ");
+              display.print(InputManager::getButtonName(i));
+            }
+          }
+          if (!anyPressed)
+          {
+            display.print("Press any button");
+          }
 
           // Draw battery information
           drawBatteryInfo();
@@ -311,7 +227,24 @@ void displayUpdateTask(void *parameter)
           display.fillScreen(GxEPD_WHITE);
           display.setFont(&FreeMonoBold12pt7b);
           display.setCursor(20, 100);
-          display.print(getButtonName(currentPressedButton));
+          bool anyPressed = false;
+          for (int i = 0; i <= 6; i++)
+          {
+            if (input_manager.isPressed(i))
+            {
+              if (!anyPressed)
+              {
+                display.print("Pressing:");
+                anyPressed = true;
+              }
+              display.print(" ");
+              display.print(InputManager::getButtonName(i));
+            }
+          }
+          if (!anyPressed)
+          {
+            display.print("Press any button");
+          }
           drawBatteryInfo();
         } while (display.nextPage());
       }
@@ -348,34 +281,26 @@ void displayUpdateTask(void *parameter)
 // Verify long press on wake-up from deep sleep
 void verifyWakeupLongPress()
 {
-  // Temporarily configure pin as digital input to check state
-  pinMode(BTN_GPIO3, INPUT_PULLUP);
-
-  unsigned long pressStart = millis();
   bool abortBoot = false;
+  input_manager.update();
 
-  // Monitor button state for the duration
-  while (millis() - pressStart < POWER_BUTTON_WAKEUP_MS)
+  while (input_manager.getHeldTime() < POWER_BUTTON_WAKEUP_MS)
   {
-    // If button reads HIGH (released) before time is up
-    if (digitalRead(BTN_GPIO3) == HIGH)
+    delay(10);
+    input_manager.update();
+    if (!input_manager.isPressed(InputManager::BTN_POWER))
     {
       abortBoot = true;
       break;
     }
-    delay(10);
   }
 
   if (abortBoot)
   {
     // Button released too early. Returning to sleep.
     // IMPORTANT: Re-arm the wakeup trigger before sleeping again
-    esp_deep_sleep_enable_gpio_wakeup(1ULL << BTN_GPIO3, ESP_GPIO_WAKEUP_GPIO_LOW);
+    esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
     esp_deep_sleep_start();
-  }
-  else
-  {
-    lastButton = POWER;
   }
 }
 
@@ -383,11 +308,10 @@ void verifyWakeupLongPress()
 void enterDeepSleep()
 {
   displayCommand = DISPLAY_SLEEP;
-  Serial.println("Power button released after a long press. Entering deep sleep.");
   delay(2000); // Allow Serial buffer to empty and display to update
 
   // Enable Wakeup on LOW (button press)
-  esp_deep_sleep_enable_gpio_wakeup(1ULL << BTN_GPIO3, ESP_GPIO_WAKEUP_GPIO_LOW);
+  esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
 
   // Enter Deep Sleep
   esp_deep_sleep_start();
@@ -395,6 +319,9 @@ void enterDeepSleep()
 
 void setup()
 {
+  // Initialize inputs
+  input_manager.begin();
+
   // Check if boot was triggered by the Power Button (Deep Sleep Wakeup)
   // If triggered by RST pin or Battery insertion, this will be false, allowing normal boot.
   if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO)
@@ -423,12 +350,6 @@ void setup()
   Serial.println("=================================");
   Serial.println();
 
-  // Initialize button pins
-  pinMode(BAT_GPIO0, INPUT);
-  pinMode(BTN_GPIO1, INPUT);
-  pinMode(BTN_GPIO2, INPUT);
-  pinMode(BTN_GPIO3, INPUT_PULLUP); // Power button
-
   // Initialize SPI with custom pins
   SPI.begin(EPD_SCLK,SD_SPI_MISO, EPD_MOSI, EPD_CS);
   // Initialize display
@@ -454,7 +375,6 @@ void setup()
 
 
   // Draw initial welcome screen
-  currentPressedButton = NONE;
   displayCommand = DISPLAY_INITIAL;
 
   // Create display update task on core 0 (main loop runs on core 1)
@@ -469,25 +389,33 @@ void setup()
 
   Serial.println("Display task created");
   Serial.println("Setup complete!\n");
+
+  // Avoid entering main loop while still holding power on button
+  while (input_manager.isPressed(InputManager::BTN_POWER))
+  {
+    delay(10);
+    input_manager.update();
+  }
 }
 
 #ifdef DEBUG_IO
 void debugIO()
 {
-  // Log raw analog levels of BTN1 and BTN2 not more often than once per second
-  rawBat = analogRead(BAT_GPIO0);
-  int rawBtn1 = analogRead(BTN_GPIO1);
-  int rawBtn2 = analogRead(BTN_GPIO2);
-  int rawBtn3 = digitalRead(BTN_GPIO3);
-  Serial.print("ADC BTN1=");
-  Serial.print(rawBtn1);
-  Serial.print("    BTN2=");
-  Serial.print(rawBtn2);
-  Serial.print("    BTN3=");
-  Serial.print(rawBtn3);
-  Serial.println("");
+  // log each button
+  Serial.println("== Buttons ==");
+  for (int i = 0; i <= 6; i++)
+  {
+    Serial.printf(
+      "%s - wasPressed: %s, wasReleased: %s, isPressed: %s\n",
+      InputManager::getButtonName(i),
+      input_manager.wasPressed(i) ? "yes" : "no",
+      input_manager.wasReleased(i) ? "yes" : "no",
+      input_manager.isPressed(i) ? "yes" : "no"
+    );
+  }
 
   // log battery info
+  rawBat = analogRead(BAT_GPIO0);
   Serial.printf("== Battery (charging: %s) ==\n", isCharging() ? "yes" : "no");
   Serial.print("Value from pin (raw/calibrated): ");
   Serial.print(rawBat);
@@ -506,36 +434,24 @@ void debugIO()
 
 void loop()
 {
-  Button currentButton = GetPressedButton();
+  input_manager.update();
 
-  // Detect button press (transition from NONE to a button)
-  if (currentButton != NONE && lastButton == NONE)
+  if (input_manager.wasAnyPressed() || input_manager.wasAnyReleased())
   {
-    Serial.print("Button: ");
-    Serial.println(getButtonName(currentButton));
-
-    currentPressedButton = currentButton;
     displayCommand = DISPLAY_TEXT;
 
 #ifdef DEBUG_IO
     debugIO();
 #endif
 
-    if (currentButton == POWER)
-    {
-      unsigned long startTime = millis();
-      // Wait for button release
-      while (digitalRead(BTN_GPIO3) == LOW)
-        delay(50);
-
-      unsigned long currentTime = millis();
+    if (input_manager.wasReleased(InputManager::BTN_POWER)) {
       // Power button long pressed => go to sleep
-      if (currentTime - startTime > POWER_BUTTON_SLEEP_MS)
+      if (input_manager.getHeldTime() > POWER_BUTTON_SLEEP_MS) {
+        Serial.printf("Power button released after %lums. Entering deep sleep.\n", input_manager.getHeldTime());
         enterDeepSleep();
+      }
     }
   }
-
-  lastButton = currentButton;
 
   delay(50);
 }
